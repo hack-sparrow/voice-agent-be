@@ -1,0 +1,10 @@
+livekit-agents
+livekit-plugins-deepgram
+livekit-plugins-cartesia
+livekit-plugins-anthropic
+livekit-plugins-silero
+livekit-plugins-noise-cancellation
+livekit-plugins-turn-detector
+livekit-plugins-bey>=1.3.12
+python-dotenv
+supabase
