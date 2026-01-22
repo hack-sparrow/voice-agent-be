@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import json
 import os
@@ -64,7 +65,7 @@ async def entrypoint(ctx: JobContext):
         # Log all tracks published by this participant
         for track_pub in participant.track_publications.values():
             logger.info(
-                f"  Track: {track_pub.track_name} ({track_pub.kind}), "
+                f"  Track: {track_pub.name} ({track_pub.kind}), "
                 f"Source: {track_pub.source}, Muted: {track_pub.is_muted}"
             )
 
@@ -81,7 +82,7 @@ async def entrypoint(ctx: JobContext):
     ):
         logger.info(
             f"Track published - Participant: {participant.identity} ({participant.kind}), "
-            f"Track: {publication.track_name} ({publication.kind}), Source: {publication.source}"
+            f"Track: {publication.name} ({publication.kind}), Source: {publication.source}"
         )
 
     async def on_track_unpublished(
@@ -89,14 +90,26 @@ async def entrypoint(ctx: JobContext):
     ):
         logger.info(
             f"Track unpublished - Participant: {participant.identity} ({participant.kind}), "
-            f"Track: {publication.track_name}"
+            f"Track: {publication.name}"
         )
 
-    # Register event listeners
-    ctx.room.on("participant_connected", on_participant_connected)
-    ctx.room.on("participant_disconnected", on_participant_disconnected)
-    ctx.room.on("track_published", on_track_published)
-    ctx.room.on("track_unpublished", on_track_unpublished)
+    # Register event listeners (wrap async callbacks in synchronous wrappers)
+    def sync_on_participant_connected(participant: rtc.RemoteParticipant):
+        asyncio.create_task(on_participant_connected(participant))
+    
+    def sync_on_participant_disconnected(participant: rtc.RemoteParticipant):
+        asyncio.create_task(on_participant_disconnected(participant))
+    
+    def sync_on_track_published(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        asyncio.create_task(on_track_published(publication, participant))
+    
+    def sync_on_track_unpublished(publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        asyncio.create_task(on_track_unpublished(publication, participant))
+    
+    ctx.room.on("participant_connected", sync_on_participant_connected)
+    ctx.room.on("participant_disconnected", sync_on_participant_disconnected)
+    ctx.room.on("track_published", sync_on_track_published)
+    ctx.room.on("track_unpublished", sync_on_track_unpublished)
 
     # Log existing remote participants
     if ctx.room.remote_participants:
@@ -129,11 +142,22 @@ async def entrypoint(ctx: JobContext):
     # Monkey patch or bind the broadcast method?
     # Better: Update BookingAgent to use self.ctx if we set it.
 
+    # Check for Cartesia API key
+    cartesia_api_key = os.getenv("CARTESIA_API_KEY")
+    if not cartesia_api_key:
+        logger.warning(
+            "CARTESIA_API_KEY not set. Cartesia TTS may fail with 402 (Payment Required) error. "
+            "Please set CARTESIA_API_KEY in your .env file."
+        )
+    else:
+        logger.info("Cartesia API key found")
+
     session = AgentSession(
         stt=DeepgramSTT(model="nova-2-general", language="en-US"),
         llm=AnthropicLLM(model="claude-sonnet-4-5-20250929"),
         tts=CartesiaTTS(
-            model="sonic-2"
+            model="sonic-2",
+            api_key=cartesia_api_key  # Pass explicitly for clarity
         ),  # default voice "Katie"; use voice="<id>" for custom
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
@@ -195,7 +219,8 @@ async def entrypoint(ctx: JobContext):
     logger.info("Connected to room successfully")
 
     # Log final participant status after connection
-    logger.info(f"Room state: {ctx.room.state}")
+    room_status = "connected" if ctx.room.isconnected() else "disconnected"
+    logger.info(f"Room status: {room_status}")
     if ctx.room.isconnected():
         logger.info(f"Local participant identity: {ctx.room.local_participant.identity}")
     logger.info(f"Remote participants count: {len(ctx.room.remote_participants)}")
